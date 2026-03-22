@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>RunTrace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --surface2: #1e1e1e;
+    --border: #2a2a2a;
+    --accent: #c8f135;
+    --accent2: #ff6b35;
+    --text: #f0f0f0;
+    --muted: #666;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    width: 100%;
+    position: relative;
+  }
+
+  /* MAP */
+  #map {
+    flex: 1;
+    width: 100%;
+    z-index: 1;
+  }
+
+  .leaflet-container {
+    background: #111 !important;
+  }
+
+  /* custom dark map tiles via CSS filter */
+  .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.7);
+  }
+
+  /* HUD OVERLAY on map */
+  #hud {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    z-index: 1000;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+
+  #logo {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    background: rgba(10,10,10,0.85);
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(200,241,53,0.2);
+    backdrop-filter: blur(8px);
+  }
+
+  #status-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 6px 12px;
+    border-radius: 20px;
+    background: rgba(10,10,10,0.85);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.3s;
+  }
+
+  #status-pill.idle { color: var(--muted); border-color: var(--border); }
+  #status-pill.running { color: var(--accent); border-color: rgba(200,241,53,0.3); }
+  #status-pill.paused { color: var(--accent2); border-color: rgba(255,107,53,0.3); }
+
+  .pulse {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .pulse.active {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  /* BOTTOM PANEL */
+  #panel {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 1000;
+    padding: 16px 16px 24px;
+  }
+
+  /* STATS ROW */
+  #stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .stat {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 10px 10px 8px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .stat.active::before { opacity: 1; }
+
+  .stat-label {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .stat-unit {
+    font-size: 10px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+
+  /* SPLITS */
+  #splits-wrap {
+    margin-bottom: 14px;
+    max-height: 72px;
+    overflow-y: auto;
+  }
+
+  #splits-wrap::-webkit-scrollbar { display: none; }
+
+  #splits-header {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  #splits-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .split-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: slideIn 0.3s ease;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .split-km {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    width: 36px;
+  }
+
+  .split-bar-wrap {
+    flex: 1;
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .split-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+
+  .split-pace {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    width: 52px;
+    text-align: right;
+  }
+
+  /* CONTROLS */
+  #controls {
+    display: flex;
+    gap: 10px;
+  }
+
+  #btn-start {
+    flex: 1;
+    height: 52px;
+    border-radius: 12px;
+    border: none;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--accent);
+    color: #0a0a0a;
+  }
+
+  #btn-start:active { transform: scale(0.97); }
+  #btn-start.running { background: var(--accent2); color: #fff; }
+  #btn-start.paused { background: var(--surface2); color: var(--accent); border: 1px solid rgba(200,241,53,0.3); }
+
+  #btn-reset {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+
+  #btn-reset:active { transform: scale(0.95); }
+
+  /* CIRCUIT ALERT */
+  #circuit-alert {
+    position: absolute;
+    top: 70px;
+    left: 16px;
+    right: 16px;
+    z-index: 2000;
+    background: rgba(10,10,10,0.95);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: none;
+    backdrop-filter: blur(12px);
+    animation: alertIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  @keyframes alertIn {
+    from { opacity: 0; transform: translateY(-12px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  #circuit-alert.show { display: flex; align-items: center; gap: 12px; }
+
+  .alert-icon {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: rgba(200,241,53,0.15);
+    border: 1px solid rgba(200,241,53,0.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .alert-body { flex: 1; }
+  .alert-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    margin-bottom: 2px;
+  }
+
+  .alert-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .alert-close {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+  }
+
+  /* GPS waiting state */
+  #gps-waiting {
+    position: absolute;
+    inset: 0;
+    z-index: 3000;
+    background: rgba(10,10,10,0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    backdrop-filter: blur(4px);
+  }
+
+  #gps-waiting.hidden { display: none; }
+
+  .gps-spinner {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .gps-text {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  /* current location marker */
+  .runner-dot {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 3px solid #0a0a0a;
+    box-shadow: 0 0 0 3px rgba(200,241,53,0.3);
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- GPS waiting overlay -->
+  <div id="gps-waiting">
+    <div class="gps-spinner"></div>
+    <div class="gps-text">ACQUIRING GPS...</div>
+  </div>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="logo">RUNTRACE</div>
+    <div id="status-pill" class="idle">
+      <div class="pulse" id="pulse-dot"></div>
+      <span id="status-text">IDLE</span>
+    </div>
+  </div>
+
+  <!-- Circuit Alert -->
+  <div id="circuit-alert">
+    <div class="alert-icon">⬡</div>
+    <div class="alert-body">
+      <div class="alert-title">CIRCUIT DETECTED</div>
+      <div class="alert-sub" id="alert-sub">Loop closed — area being computed</div>
+    </div>
+    <button class="alert-close" onclick="dismissAlert()">✕</button>
+  </div>
+
+  <!-- Bottom Panel -->
+  <div id="panel">
+    <div id="stats">
+      <div class="stat" id="stat-dist">
+        <div class="stat-label">Distance</div>
+        <div class="stat-value" id="val-dist">0.00</div>
+        <div class="stat-unit">km</div>
+      </div>
+      <div class="stat" id="stat-pace">
+        <div class="stat-label">Pace</div>
+        <div class="stat-value" id="val-pace">--:--</div>
+        <div class="stat-unit">min/km</div>
+      </div>
+      <div class="stat" id="stat-speed">
+        <div class="stat-label">Speed</div>
+        <div class="stat-value" id="val-speed">0.0</div>
+        <div class="stat-unit">km/h</div>
+      </div>
+    </div>
+
+    <div id="splits-wrap">
+      <div id="splits-header">KM SPLITS</div>
+      <div id="splits-list"><div style="font-size:11px;color:var(--muted);font-family:var(--mono)">— no splits yet —</div></div>
+    </div>
+
+    <div id="controls">
+      <button id="btn-start" onclick="toggleRun()">START RUN</button>
+      <button id="btn-reset" onclick="resetRun()" title="Reset">↺</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────
+const state = {
+  running: false,
+  paused: false,
+  coords: [],        // [{lat, lng, ts}]
+  totalDist: 0,      // km
+  startTime: null,
+  lastPos: null,
+  watchId: null,
+  currentSpeed: 0,
+  splits: [],        // [{km, pace}]
+  lastSplitDist: 0,
+  lastSplitTime: null,
+  elapsedTimer: null,
+};
+
+// ── Map setup ──────────────────────────────────────────
+const map = L.map('map', {
+  zoomControl: false,
+  attributionControl: false,
+});
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+}).addTo(map);
+
+// Route polyline
+const routeLine = L.polyline([], {
+  color: '#c8f135',
+  weight: 3.5,
+  opacity: 0.9,
+  lineJoin: 'round',
+  lineCap: 'round',
+}).addTo(map);
+
+// Runner marker
+const runnerIcon = L.divIcon({
+  className: '',
+  html: '<div class="runner-dot"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+const runnerMarker = L.marker([0, 0], { icon: runnerIcon });
+
+// ── GPS Init ───────────────────────────────────────────
+let mapReady = false;
+
+function initGPS() {
+  if (!navigator.geolocation) {
+    document.getElementById('gps-waiting').innerHTML =
+      '<div style="font-family:var(--mono);font-size:12px;color:#ff6b35;letter-spacing:0.1em">GPS NOT AVAILABLE</div>';
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(pos => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    map.setView([lat, lng], 17);
+    runnerMarker.setLatLng([lat, lng]).addTo(map);
+    mapReady = true;
+    document.getElementById('gps-waiting').classList.add('hidden');
+  }, err => {
+    document.getElementById('gps-waiting').innerHTML =
+      `<div style="font-family:var(--mono);font-size:11px;color:#ff6b35;text-align:center;padding:0 32px;letter-spacing:0.08em">GPS ERROR<br><br>${err.message}</div>`;
+  }, { enableHighAccuracy: true, timeout: 15000 });
+}
+
+// ── Run controls ───────────────────────────────────────
+function toggleRun() {
+  if (!mapReady) return;
+
+  if (!state.running && !state.paused) {
+    startRun();
+  } else if (state.running) {
+    pauseRun();
+  } else if (state.paused) {
+    resumeRun();
+  }
+}
+
+function startRun() {
+  state.running = true;
+  state.paused = false;
+  state.startTime = Date.now();
+  state.lastSplitTime = Date.now();
+
+  setStatus('running');
+  document.getElementById('btn-start').textContent = 'PAUSE';
+  document.getElementById('btn-start').classList.add('running');
+  document.querySelectorAll('.stat').forEach(s => s.classList.add('active'));
+
+  state.watchId = navigator.geolocation.watchPosition(onPosition, null, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 10000,
+  });
+}
+
+function pauseRun() {
+  state.running = false;
+  state.paused = true;
+  if (state.watchId !== null) {
+    navigator.geolocation.clearWatch(state.watchId);
+    state.watchId = null;
+  }
+  setStatus('paused');
+  document.getElementById('btn-start').textContent = 'RESUME';
+  document.getElementById('btn-start').classList.remove('running');
+  document.getElementById('btn-start').classList.add('paused');
+}
+
+function resumeRun() {
+  state.running = true;
+  state.paused = false;
+  setStatus('running');
+  document.getElementById('btn-start').textContent = 'PAUSE';
+  document.getElementById('btn-start').classList.remove('paused');
+  document.getElementById('btn-start').classList.add('running');
+
+  state.watchId = navigator.geolocation.watchPosition(onPosition, null, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 10000,
+  });
+}
+
+function resetRun() {
+  if (state.watchId !== null) {
+    navigator.geolocation.clearWatch(state.watchId);
+    state.watchId = null;
+  }
+  state.running = false;
+  state.paused = false;
+  state.coords = [];
+  state.totalDist = 0;
+  state.startTime = null;
+  state.lastPos = null;
+  state.currentSpeed = 0;
+  state.splits = [];
+  state.lastSplitDist = 0;
+  state.lastSplitTime = null;
+
+  routeLine.setLatLngs([]);
+  setStatus('idle');
+
+  document.getElementById('btn-start').textContent = 'START RUN';
+  document.getElementById('btn-start').classList.remove('running', 'paused');
+  document.querySelectorAll('.stat').forEach(s => s.classList.remove('active'));
+
+  document.getElementById('val-dist').textContent = '0.00';
+  document.getElementById('val-pace').textContent = '--:--';
+  document.getElementById('val-speed').textContent = '0.0';
+  document.getElementById('splits-list').innerHTML =
+    '<div style="font-size:11px;color:var(--muted);font-family:var(--mono)">— no splits yet —</div>';
+
+  dismissAlert();
+}
+
+// ── Position handler ───────────────────────────────────
+function onPosition(pos) {
+  if (!state.running) return;
+
+  const { latitude: lat, longitude: lng, speed } = pos.coords;
+  const ts = pos.timestamp;
+  const point = { lat, lng, ts };
+
+  // Speed
+  state.currentSpeed = speed ? speed * 3.6 : 0;
+
+  // Distance
+  if (state.lastPos) {
+    const d = haversine(state.lastPos.lat, state.lastPos.lng, lat, lng);
+    state.totalDist += d;
+
+    // Split check
+    const kmCrossed = Math.floor(state.totalDist);
+    if (kmCrossed > state.lastSplitDist) {
+      const splitTime = ts - state.lastSplitTime;
+      const pace = splitTime / 1000 / 60; // minutes per km
+      state.splits.push({ km: kmCrossed, pace });
+      state.lastSplitDist = kmCrossed;
+      state.lastSplitTime = ts;
+      renderSplits();
+    }
+  }
+
+  state.lastPos = point;
+  state.coords.push(point);
+
+  // Update map
+  const latlng = [lat, lng];
+  routeLine.addLatLng(latlng);
+  runnerMarker.setLatLng(latlng);
+  map.panTo(latlng, { animate: true, duration: 0.5 });
+
+  // Update stats
+  updateStats();
+
+  // Circuit detection
+  if (state.coords.length > 20) {
+    checkCircuit(point);
+  }
+}
+
+// ── Stats ──────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('val-dist').textContent = state.totalDist.toFixed(2);
+
+  // Pace: min/km from current speed
+  if (state.currentSpeed > 0.5) {
+    const paceMin = 60 / state.currentSpeed;
+    const min = Math.floor(paceMin);
+    const sec = Math.floor((paceMin - min) * 60);
+    document.getElementById('val-pace').textContent =
+      `${min}:${sec.toString().padStart(2, '0')}`;
+  } else {
+    document.getElementById('val-pace').textContent = '--:--';
+  }
+
+  document.getElementById('val-speed').textContent =
+    state.currentSpeed.toFixed(1);
+}
+
+function renderSplits() {
+  const list = document.getElementById('splits-list');
+  if (state.splits.length === 0) return;
+
+  // Best pace for bar scaling
+  const bestPace = Math.min(...state.splits.map(s => s.pace));
+
+  list.innerHTML = state.splits.slice().reverse().map(s => {
+    const min = Math.floor(s.pace);
+    const sec = Math.floor((s.pace - min) * 60);
+    const paceStr = `${min}:${sec.toString().padStart(2, '0')}`;
+    const barW = Math.min(100, (bestPace / s.pace) * 100);
+    return `
+      <div class="split-row">
+        <span class="split-km">KM ${s.km}</span>
+        <div class="split-bar-wrap">
+          <div class="split-bar" style="width:${barW}%"></div>
+        </div>
+        <span class="split-pace">${paceStr}/km</span>
+      </div>`;
+  }).join('');
+}
+
+// ── Circuit detection ──────────────────────────────────
+const CIRCUIT_THRESHOLD = 25;   // meters — how close to start to close loop
+const MIN_LOOP_POINTS = 25;     // minimum points before checking
+let lastAlertTime = 0;
+
+function checkCircuit(current) {
+  const now = Date.now();
+  if (now - lastAlertTime < 10000) return; // cooldown 10s
+
+  const coords = state.coords;
+  const len = coords.length;
+
+  // Check current point against all points older than MIN_LOOP_POINTS
+  for (let i = 0; i < len - MIN_LOOP_POINTS; i++) {
+    const d = haversine(current.lat, current.lng, coords[i].lat, coords[i].lng);
+    if (d < CIRCUIT_THRESHOLD) {
+      // Loop closed — compute approx area
+      const loopCoords = coords.slice(i);
+      const area = approxPolygonArea(loopCoords);
+      lastAlertTime = now;
+      showCircuitAlert(area, loopCoords.length);
+
+      // Draw the closed loop highlight
+      highlightLoop(loopCoords);
+      break;
+    }
+  }
+}
+
+function highlightLoop(loopCoords) {
+  const latlngs = loopCoords.map(c => [c.lat, c.lng]);
+  L.polygon(latlngs, {
+    color: '#c8f135',
+    fillColor: '#c8f135',
+    fillOpacity: 0.08,
+    weight: 1.5,
+    dashArray: '4 4',
+  }).addTo(map);
+}
+
+// ── Circuit Alert ──────────────────────────────────────
+function showCircuitAlert(areaSqM, pointCount) {
+  const areaStr = areaSqM < 10000
+    ? `${Math.round(areaSqM)} m²`
+    : `${(areaSqM / 1000000).toFixed(3)} km²`;
+
+  document.getElementById('alert-sub').textContent =
+    `Loop closed · Area ≈ ${areaStr}`;
+  document.getElementById('circuit-alert').classList.add('show');
+
+  // Auto-dismiss after 6s
+  setTimeout(dismissAlert, 6000);
+}
+
+function dismissAlert() {
+  document.getElementById('circuit-alert').classList.remove('show');
+}
+
+// ── Status ─────────────────────────────────────────────
+function setStatus(s) {
+  const pill = document.getElementById('status-pill');
+  const dot = document.getElementById('pulse-dot');
+  const text = document.getElementById('status-text');
+  pill.className = `status-pill ${s}`;
+  dot.className = `pulse ${s === 'running' ? 'active' : ''}`;
+  text.textContent = s.toUpperCase();
+}
+
+// ── Maths ──────────────────────────────────────────────
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) *
+    Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); // km
+}
+
+function approxPolygonArea(coords) {
+  // Shoelace formula on lat/lng, convert to m²
+  let area = 0;
+  const n = coords.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += coords[i].lng * coords[j].lat;
+    area -= coords[j].lng * coords[i].lat;
+  }
+  area = Math.abs(area) / 2;
+  // Convert degrees² to m² (approximate at mid latitude)
+  const midLat = coords[Math.floor(n/2)].lat * Math.PI / 180;
+  const mPerDegLat = 111320;
+  const mPerDegLng = 111320 * Math.cos(midLat);
+  return area * mPerDegLat * mPerDegLng;
+}
+
+// ── Boot ───────────────────────────────────────────────
+initGPS();
+</script>
+</body>
+</html>
