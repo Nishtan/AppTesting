@@ -591,6 +591,7 @@ function resetRun() {
   state.splits = [];
   state.lastSplitDist = 0;
   state.lastSplitTime = null;
+  state.cumDist = null;
 
   routeLine.setLatLngs([]);
   setStatus('idle');
@@ -697,31 +698,50 @@ function renderSplits() {
 }
 
 // ── Circuit detection ──────────────────────────────────
-const CIRCUIT_THRESHOLD = 25;   // meters — how close to start to close loop
-const MIN_LOOP_POINTS = 25;     // minimum points before checking
+const CLOSE_THRESHOLD_M = 25;   // straight line closure distance in meters
+const MIN_PATH_DIST_M   = 100;  // minimum path distance traveled since candidate point
+const MIN_DETOUR_RATIO  = 3;    // path dist / straight line dist — filters straight lines
 let lastAlertTime = 0;
 
 function checkCircuit(current) {
   const now = Date.now();
-  if (now - lastAlertTime < 10000) return; // cooldown 10s
+  if (now - lastAlertTime < 10000) return;
 
   const coords = state.coords;
   const len = coords.length;
 
-  // Check current point against all points older than MIN_LOOP_POINTS
-  for (let i = 0; i < len - MIN_LOOP_POINTS; i++) {
-    const d = haversine(current.lat, current.lng, coords[i].lat, coords[i].lng);
-    if (d < CIRCUIT_THRESHOLD) {
-      // Loop closed — compute approx area
-      const loopCoords = coords.slice(i);
-      const area = approxPolygonArea(loopCoords);
-      lastAlertTime = now;
-      showCircuitAlert(area, loopCoords.length);
+  // Build cumulative path distances incrementally
+  if (!state.cumDist) state.cumDist = [0];
+  while (state.cumDist.length < len) {
+    const i = state.cumDist.length;
+    const d = haversine(coords[i-1].lat, coords[i-1].lng,
+                        coords[i].lat,   coords[i].lng) * 1000;
+    state.cumDist.push(state.cumDist[i-1] + d);
+  }
 
-      // Draw the closed loop highlight
-      highlightLoop(loopCoords);
-      break;
-    }
+  const currentCumDist = state.cumDist[len - 1];
+
+  for (let i = 0; i < len - 2; i++) {
+    const straightLine = haversine(
+      current.lat, current.lng,
+      coords[i].lat, coords[i].lng
+    ) * 1000;
+
+    if (straightLine > CLOSE_THRESHOLD_M) continue;
+
+    const pathDist = currentCumDist - state.cumDist[i];
+
+    if (pathDist < MIN_PATH_DIST_M) continue;
+
+    const detourRatio = pathDist / Math.max(straightLine, 1);
+    if (detourRatio < MIN_DETOUR_RATIO) continue;
+
+    const loopCoords = coords.slice(i);
+    const area = approxPolygonArea(loopCoords);
+    lastAlertTime = now;
+    showCircuitAlert(area, pathDist);
+    highlightLoop(loopCoords);
+    break;
   }
 }
 
@@ -737,13 +757,15 @@ function highlightLoop(loopCoords) {
 }
 
 // ── Circuit Alert ──────────────────────────────────────
-function showCircuitAlert(areaSqM, pointCount) {
+function showCircuitAlert(areaSqM, pathDistM) {
   const areaStr = areaSqM < 10000
     ? `${Math.round(areaSqM)} m²`
     : `${(areaSqM / 1000000).toFixed(3)} km²`;
-
+  const distStr = pathDistM < 1000
+    ? `${Math.round(pathDistM)}m loop`
+    : `${(pathDistM / 1000).toFixed(2)}km loop`;
   document.getElementById('alert-sub').textContent =
-    `Loop closed · Area ≈ ${areaStr}`;
+    `${distStr} · Area ≈ ${areaStr}`;
   document.getElementById('circuit-alert').classList.add('show');
 
   // Auto-dismiss after 6s
